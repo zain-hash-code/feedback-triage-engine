@@ -45,7 +45,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         success: true,
-        message: "Feedback accepted and scheduled for AI triage",
+        message: "Customer voice ingested and dispatched for autonomous AI triage",
         data: entry,
       },
       { status: 202 }
@@ -92,11 +92,15 @@ export async function GET(req: NextRequest) {
     const category = searchParams.get("category") || undefined;
     const urgency = searchParams.get("urgency") || undefined;
     const search = searchParams.get("search") || undefined;
+    const source = searchParams.get("source") || undefined;
+    const resolution_status = searchParams.get("resolution_status") || undefined;
 
     const feedback = await feedbackService.listFeedback(tenantId, {
       category,
       urgency,
       search,
+      source,
+      resolution_status,
     });
 
     return NextResponse.json({

@@ -27,6 +27,8 @@ function mockClassifyFeedback(rawText: string): LLMAnalysisOutput {
   let category: "bug" | "feature_request" | "billing" | "other" = "other";
   let urgency: "low" | "medium" | "high" | "critical" = "low";
   let sentiment: "positive" | "neutral" | "negative" = "neutral";
+  let suggestedAction = "Review and forward to general support triage";
+  let confidence = 0.92;
 
   // Category & Urgency heuristics
   if (
@@ -34,32 +36,48 @@ function mockClassifyFeedback(rawText: string): LLMAnalysisOutput {
     lower.includes("charge") ||
     lower.includes("refund") ||
     lower.includes("invoice") ||
-    lower.includes("payment")
+    lower.includes("payment") ||
+    lower.includes("stripe")
   ) {
     category = "billing";
-    urgency = lower.includes("double") || lower.includes("asap") || lower.includes("urgent") ? "critical" : "high";
+    const isCritical = lower.includes("double") || lower.includes("asap") || lower.includes("urgent");
+    urgency = isCritical ? "critical" : "high";
     sentiment = "negative";
+    suggestedAction = isCritical
+      ? "Immediate escalation to Billing Operations; initiate Stripe refund audit"
+      : "Forward to Accounts Receivable for invoice clarification";
+    confidence = 0.97;
   } else if (
     lower.includes("crash") ||
     lower.includes("broken") ||
     lower.includes("bug") ||
     lower.includes("error") ||
     lower.includes("fail") ||
-    lower.includes("not working")
+    lower.includes("not working") ||
+    lower.includes("500") ||
+    lower.includes("timeout")
   ) {
     category = "bug";
-    urgency = lower.includes("completely") || lower.includes("production") || lower.includes("blocker") ? "critical" : "high";
+    const isCritical = lower.includes("completely") || lower.includes("production") || lower.includes("blocker");
+    urgency = isCritical ? "critical" : "high";
     sentiment = "negative";
+    suggestedAction = isCritical
+      ? "P0 Alert: Assign to On-Call Platform Engineering; check Sentry error logs"
+      : "Log GitHub issue and route to Core Web Team for reproduction";
+    confidence = 0.95;
   } else if (
     lower.includes("feature") ||
     lower.includes("would love") ||
     lower.includes("suggest") ||
     lower.includes("add") ||
-    lower.includes("integrate")
+    lower.includes("integrate") ||
+    lower.includes("roadmap")
   ) {
     category = "feature_request";
     urgency = "medium";
     sentiment = lower.includes("great") || lower.includes("love") ? "positive" : "neutral";
+    suggestedAction = "Tag Product Management; append to Q3 Integration Roadmap backlog";
+    confidence = 0.89;
   } else if (
     lower.includes("great") ||
     lower.includes("awesome") ||
@@ -70,6 +88,8 @@ function mockClassifyFeedback(rawText: string): LLMAnalysisOutput {
     category = "other";
     urgency = "low";
     sentiment = "positive";
+    suggestedAction = "Share praise in company #customer-love Slack channel";
+    confidence = 0.94;
   }
 
   // Summary generation: concise sentence (max 100 words)
@@ -85,6 +105,8 @@ function mockClassifyFeedback(rawText: string): LLMAnalysisOutput {
     urgency,
     summary,
     sentiment,
+    suggested_action: suggestedAction,
+    confidence_score: confidence,
     tokens_consumed: estimatedTokens,
   };
 }
@@ -99,6 +121,8 @@ Classify it into:
 - urgency: "low" | "medium" | "high" | "critical"
 - summary: A concise, objective summary of the issue or request (under 100 words)
 - sentiment: "positive" | "neutral" | "negative"
+- suggested_action: A concrete, actionable operational next step for internal engineers
+- confidence_score: A float between 0.0 and 1.0 indicating model classification confidence
 
 Return ONLY a valid JSON object matching this schema, with no markdown code fences and no conversational filler:
 {
@@ -106,6 +130,8 @@ Return ONLY a valid JSON object matching this schema, with no markdown code fenc
   "urgency": "...",
   "summary": "...",
   "sentiment": "...",
+  "suggested_action": "...",
+  "confidence_score": 0.95,
   "tokens_consumed": <integer>
 }`;
 
@@ -187,7 +213,7 @@ export class LLMService {
       },
       body: JSON.stringify({
         model: "claude-3-5-haiku-20241022",
-        max_tokens: 300,
+        max_tokens: 350,
         system: SYSTEM_PROMPT,
         messages: [
           {
@@ -210,7 +236,6 @@ export class LLMService {
     const content = data.content?.[0]?.text || "";
     const totalTokens = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
 
-    // Inject tokens_consumed if not provided by model
     try {
       const parsed = JSON.parse(content);
       if (!parsed.tokens_consumed) {
@@ -272,7 +297,6 @@ export class LLMService {
   parseAndValidate(rawOutput: string): LLMAnalysisOutput {
     let parsed: any;
     try {
-      // Clean markdown code blocks if model wrapped the JSON
       const cleanJson = rawOutput
         .replace(/^```json\s*/i, "")
         .replace(/^```\s*/i, "")
