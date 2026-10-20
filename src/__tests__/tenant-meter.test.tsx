@@ -9,10 +9,12 @@ describe("TenantMeter Component Tests", () => {
     const normalUsage: TenantUsageSummary = {
       id: "t1",
       name: "Acme Corp",
+      plan_tier: "Enterprise Scale",
       monthly_token_budget: 50000,
       tokens_used: 15000,
       tokens_remaining: 35000,
       percentage_used: 30,
+      estimated_cost_usd: 0.045,
       status: "normal",
     };
 
@@ -27,10 +29,12 @@ describe("TenantMeter Component Tests", () => {
     const warningUsage: TenantUsageSummary = {
       id: "t2",
       name: "Globex Dynamics",
+      plan_tier: "Growth Tier",
       monthly_token_budget: 20000,
       tokens_used: 17000,
       tokens_remaining: 3000,
       percentage_used: 85,
+      estimated_cost_usd: 0.051,
       status: "warning_80",
     };
 
@@ -45,10 +49,12 @@ describe("TenantMeter Component Tests", () => {
     const exceededUsage: TenantUsageSummary = {
       id: "t3",
       name: "Initech",
+      plan_tier: "Starter Tier",
       monthly_token_budget: 10000,
       tokens_used: 10000,
       tokens_remaining: 0,
       percentage_used: 100,
+      estimated_cost_usd: 0.03,
       status: "exceeded_100",
     };
 

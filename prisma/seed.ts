@@ -3,116 +3,191 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log("Seeding database...");
+  console.log("Seeding Enterprise SaaS database...");
 
   // Clean existing records
   await prisma.feedbackAnalysis.deleteMany();
   await prisma.feedbackEntry.deleteMany();
   await prisma.tenant.deleteMany();
 
-  // Create Tenants
+  // 1. Acme Corporation (Enterprise Growth - Active healthy utilization)
   const tenant1 = await prisma.tenant.create({
     data: {
       id: "tenant-acme",
       name: "Acme Corporation",
-      monthly_token_budget: 50000,
-      tokens_used: 12450, // ~25%
+      plan_tier: "Enterprise Scale",
+      monthly_token_budget: 100000,
+      tokens_used: 28450, // ~28%
+      rate_limit_per_min: 300,
     },
   });
 
+  // 2. Globex Dynamics (Pro Tier - Approaching Warning Threshold)
   const tenant2 = await prisma.tenant.create({
     data: {
       id: "tenant-globex",
       name: "Globex Dynamics",
-      monthly_token_budget: 20000,
-      tokens_used: 17200, // 86% - Warning state
+      plan_tier: "Growth Tier",
+      monthly_token_budget: 30000,
+      tokens_used: 25600, // ~85%
+      rate_limit_per_min: 150,
     },
   });
 
+  // 3. Initech Labs (Starter - Exhausted Budget)
   const tenant3 = await prisma.tenant.create({
     data: {
       id: "tenant-initech",
       name: "Initech Labs",
+      plan_tier: "Starter Tier",
       monthly_token_budget: 10000,
-      tokens_used: 10000, // 100% - Exceeded state
+      tokens_used: 10000, // 100%
+      rate_limit_per_min: 60,
     },
   });
 
-  // Seed Feedback for Acme
-  const fb1 = await prisma.feedbackEntry.create({
-    data: {
+  // Sample feedback entries for Acme Corp
+  const entries = [
+    {
       tenant_id: tenant1.id,
-      raw_text: "The export to CSV button is completely broken when filtering by date range on Firefox.",
+      raw_text: "URGENT: Stripe checkout is throwing 500 internal server errors for EU customers trying to pay with 3D Secure verification cards on mobile web.",
+      source: "stripe",
+      status: "processed",
+      resolution_status: "in_progress",
+      assigned_to: "Core Platform Engineering",
+      internal_notes: "Sentry incident #3829 linked. Issue identified in webhook idempotency middleware.",
+      analysis: {
+        category: "bug",
+        urgency: "critical",
+        summary: "Stripe checkout 500 error on EU 3DS card verification.",
+        sentiment: "negative",
+        suggested_action: "P0 Alert: Assign to On-Call Platform Engineering; review Stripe 3DS auth logs",
+        confidence_score: 0.98,
+        latency_ms: 245,
+        model_used: "claude-3-5-haiku",
+        tokens_consumed: 185,
+      },
+    },
+    {
+      tenant_id: tenant1.id,
+      raw_text: "Customer ticket via Zendesk: Our finance team was double-charged for our Enterprise seat expansion on June 15th ($4,200 duplicate charge). Please issue a credit ASAP.",
+      source: "zendesk",
+      status: "processed",
+      resolution_status: "open",
+      assigned_to: "Billing & Revenue Ops",
+      internal_notes: "Invoice #INV-2026-881 verified. Pending refund approval from CFO.",
+      analysis: {
+        category: "billing",
+        urgency: "critical",
+        summary: "Enterprise customer double-charged $4,200 for seat expansion.",
+        sentiment: "negative",
+        suggested_action: "Immediate escalation to Billing Operations; initiate Stripe refund audit",
+        confidence_score: 0.97,
+        latency_ms: 198,
+        model_used: "claude-3-5-haiku",
+        tokens_consumed: 165,
+      },
+    },
+    {
+      tenant_id: tenant1.id,
+      raw_text: "From Intercom conversation: Would really appreciate the ability to schedule automated bi-weekly PDF report exports to our compliance Slack channel.",
+      source: "intercom",
+      status: "processed",
+      resolution_status: "open",
+      assigned_to: "Product Management",
+      internal_notes: "Added to Q3 Slack bot integration epic.",
+      analysis: {
+        category: "feature_request",
+        urgency: "medium",
+        summary: "Requesting automated bi-weekly PDF compliance reports to Slack.",
+        sentiment: "positive",
+        suggested_action: "Tag Product Management; append to Q3 Integration Roadmap backlog",
+        confidence_score: 0.91,
+        latency_ms: 310,
+        model_used: "claude-3-5-haiku",
+        tokens_consumed: 120,
+      },
+    },
+    {
+      tenant_id: tenant1.id,
+      raw_text: "In-App Feedback: The new dark mode and sub-second query latency on the analytics board is phenomenal. Great job engineering team!",
       source: "web",
       status: "processed",
+      resolution_status: "resolved",
+      assigned_to: "Customer Success",
+      internal_notes: "Customer contacted for case study quote.",
       analysis: {
-        create: {
-          category: "bug",
-          urgency: "high",
-          summary: "CSV export fails on Firefox when date range filter is active.",
-          sentiment: "negative",
-          tokens_consumed: 145,
-        },
+        category: "other",
+        urgency: "low",
+        summary: "Praise for dark mode design and lightning-fast query latency.",
+        sentiment: "positive",
+        suggested_action: "Share praise in company #customer-love Slack channel",
+        confidence_score: 0.96,
+        latency_ms: 154,
+        model_used: "claude-3-5-haiku",
+        tokens_consumed: 88,
       },
     },
-  });
-
-  const fb2 = await prisma.feedbackEntry.create({
-    data: {
+    {
       tenant_id: tenant1.id,
-      raw_text: "Would love to see a native Slack notification integration for high-priority incidents.",
-      source: "email",
-      status: "processed",
-      analysis: {
-        create: {
-          category: "feature_request",
-          urgency: "medium",
-          summary: "Requesting Slack integration for incident alerts.",
-          sentiment: "positive",
-          tokens_consumed: 110,
-        },
-      },
-    },
-  });
-
-  const fb3 = await prisma.feedbackEntry.create({
-    data: {
-      tenant_id: tenant1.id,
-      raw_text: "We were double-billed on our latest monthly invoice. Please refund the duplicate charge ASAP.",
+      raw_text: "API webhook error report: Batch sync endpoint /api/v2/contacts timed out after 30,000ms when importing more than 10,000 records in a single payload.",
       source: "api",
       status: "processed",
+      resolution_status: "in_progress",
+      assigned_to: "Core Platform Engineering",
+      internal_notes: "Investigating database indexing on foreign key contact_tenant_idx.",
       analysis: {
-        create: {
-          category: "billing",
-          urgency: "critical",
-          summary: "Double-billing detected on monthly invoice; refund requested urgently.",
-          sentiment: "negative",
-          tokens_consumed: 160,
-        },
+        category: "bug",
+        urgency: "high",
+        summary: "Batch contact import endpoint times out on payloads > 10k records.",
+        sentiment: "negative",
+        suggested_action: "Log GitHub issue and route to Core Web Team for reproduction",
+        confidence_score: 0.94,
+        latency_ms: 220,
+        model_used: "claude-3-5-haiku",
+        tokens_consumed: 142,
       },
     },
-  });
+  ];
 
-  // Seed Feedback for Globex
+  for (const item of entries) {
+    const { analysis, ...entryData } = item;
+    await prisma.feedbackEntry.create({
+      data: {
+        ...entryData,
+        analysis: {
+          create: analysis,
+        },
+      },
+    });
+  }
+
+  // Globex feedback
   await prisma.feedbackEntry.create({
     data: {
       tenant_id: tenant2.id,
-      raw_text: "Great performance improvements on the analytics chart! Loading is twice as fast.",
-      source: "web",
+      raw_text: "Zendesk ticket: Mobile navigation hamburger menu closes prematurely on iOS Safari 17.5.",
+      source: "zendesk",
       status: "processed",
+      resolution_status: "open",
+      assigned_to: "Frontend Core",
       analysis: {
         create: {
-          category: "other",
-          urgency: "low",
-          summary: "User praising recent analytics loading speed improvements.",
-          sentiment: "positive",
-          tokens_consumed: 95,
+          category: "bug",
+          urgency: "medium",
+          summary: "Mobile drawer closes unexpectedly on iOS Safari.",
+          sentiment: "neutral",
+          suggested_action: "Log GitHub issue and route to Core Web Team for reproduction",
+          confidence_score: 0.88,
+          latency_ms: 195,
+          model_used: "claude-3-5-haiku",
+          tokens_consumed: 112,
         },
       },
     },
   });
 
-  console.log("Database seeded successfully with 3 tenants and sample feedback.");
+  console.log("Enterprise database seeded with rich real-world SaaS data!");
 }
 
 main()

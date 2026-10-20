@@ -1,38 +1,56 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
-import { TenantMeter } from "@/components/TenantMeter";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
+import { Sidebar } from "@/components/Sidebar";
+import { Header } from "@/components/Header";
+import { MetricsCards } from "@/components/MetricsCards";
+import { CategoryDistribution } from "@/components/CategoryDistribution";
 import { FeedbackTable, FeedbackWithAnalysis } from "@/components/FeedbackTable";
-import { FilterBar } from "@/components/FilterBar";
-import { FeedbackSubmitModal } from "@/components/FeedbackSubmitModal";
-import { TenantUsageSummary } from "@/lib/types";
-import { Sparkles, Layers, ShieldCheck, Database, Cpu } from "lucide-react";
+import { FeedbackDetailDrawer } from "@/components/FeedbackDetailDrawer";
+import { IngestModal } from "@/components/IngestModal";
+import { BatchActionBar } from "@/components/BatchActionBar";
+import { TenantUsageSummary, AnalyticsSummary } from "@/lib/types";
+import {
+  Filter,
+  RefreshCw,
+  Plus,
+  Layers,
+  AlertTriangle,
+  CheckCircle2,
+  SlidersHorizontal,
+} from "lucide-react";
 
 export default function DashboardPage() {
   const [tenants, setTenants] = useState<Array<{ id: string; name: string }>>([]);
   const [activeTenantId, setActiveTenantId] = useState<string>("tenant-acme");
   const [usage, setUsage] = useState<TenantUsageSummary | null>(null);
+  const [analytics, setAnalytics] = useState<AnalyticsSummary | null>(null);
   const [feedback, setFeedback] = useState<FeedbackWithAnalysis[]>([]);
-  const [loadingFeedback, setLoadingFeedback] = useState<boolean>(true);
-  const [loadingUsage, setLoadingUsage] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(true);
 
-  // Filters
-  const [category, setCategory] = useState<string>("");
-  const [urgency, setUrgency] = useState<string>("");
+  // Navigation & Filters
+  const [activeTab, setActiveTab] = useState<string>("all"); // "all", "urgent", "analytics", "webhooks"
   const [search, setSearch] = useState<string>("");
+  const [categoryFilter, setCategoryFilter] = useState<string>("");
+  const [urgencyFilter, setUrgencyFilter] = useState<string>("");
+  const [sourceFilter, setSourceFilter] = useState<string>("");
+  const [resolutionFilter, setResolutionFilter] = useState<string>("");
 
-  // Modal
-  const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
+  // Modals & Drawers
+  const [isIngestModalOpen, setIsIngestModalOpen] = useState<boolean>(false);
+  const [inspectedItem, setInspectedItem] = useState<FeedbackWithAnalysis | null>(null);
 
-  // 1. Fetch Tenant List
+  // Batch Selection
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  // 1. Fetch Tenants
   useEffect(() => {
-    async function loadTenants() {
+    async function fetchTenants() {
       try {
         const res = await fetch("/api/v1/tenants");
         const json = await res.json();
         if (json.success && json.data.length > 0) {
           setTenants(json.data);
-          // Keep current active tenant if valid, otherwise pick first
           if (!json.data.some((t: any) => t.id === activeTenantId)) {
             setActiveTenantId(json.data[0].id);
           }
@@ -41,40 +59,49 @@ export default function DashboardPage() {
         console.error("Failed to load tenants:", err);
       }
     }
-    loadTenants();
+    fetchTenants();
   }, []);
 
-  // 2. Fetch Usage for Active Tenant
+  // 2. Fetch Usage
   const loadUsage = useCallback(async () => {
     if (!activeTenantId) return;
     try {
-      setLoadingUsage(true);
       const res = await fetch(`/api/v1/tenants/${activeTenantId}/usage`);
       const json = await res.json();
-      if (json.success) {
-        setUsage(json.data);
-      }
+      if (json.success) setUsage(json.data);
     } catch (err) {
       console.error("Failed to load usage:", err);
-    } finally {
-      setLoadingUsage(false);
     }
   }, [activeTenantId]);
 
-  // 3. Fetch Feedback for Active Tenant
+  // 3. Fetch Analytics
+  const loadAnalytics = useCallback(async () => {
+    if (!activeTenantId) return;
+    try {
+      const res = await fetch("/api/v1/analytics", {
+        headers: { "x-tenant-id": activeTenantId },
+      });
+      const json = await res.json();
+      if (json.success) setAnalytics(json.data);
+    } catch (err) {
+      console.error("Failed to load analytics:", err);
+    }
+  }, [activeTenantId]);
+
+  // 4. Fetch Feedback Stream
   const loadFeedback = useCallback(async () => {
     if (!activeTenantId) return;
     try {
-      setLoadingFeedback(true);
+      setLoading(true);
       const params = new URLSearchParams();
-      if (category) params.set("category", category);
-      if (urgency) params.set("urgency", urgency);
       if (search) params.set("search", search);
+      if (categoryFilter) params.set("category", categoryFilter);
+      if (urgencyFilter) params.set("urgency", urgencyFilter);
+      if (sourceFilter) params.set("source", sourceFilter);
+      if (resolutionFilter) params.set("resolution_status", resolutionFilter);
 
       const res = await fetch(`/api/v1/feedback?${params.toString()}`, {
-        headers: {
-          "x-tenant-id": activeTenantId,
-        },
+        headers: { "x-tenant-id": activeTenantId },
       });
       const json = await res.json();
       if (json.success) {
@@ -83,16 +110,28 @@ export default function DashboardPage() {
     } catch (err) {
       console.error("Failed to load feedback:", err);
     } finally {
-      setLoadingFeedback(false);
+      setLoading(false);
     }
-  }, [activeTenantId, category, urgency, search]);
+  }, [
+    activeTenantId,
+    search,
+    categoryFilter,
+    urgencyFilter,
+    sourceFilter,
+    resolutionFilter,
+  ]);
+
+  const refreshAll = useCallback(() => {
+    loadUsage();
+    loadAnalytics();
+    loadFeedback();
+  }, [loadUsage, loadAnalytics, loadFeedback]);
 
   useEffect(() => {
-    loadUsage();
-    loadFeedback();
-  }, [loadUsage, loadFeedback]);
+    refreshAll();
+  }, [refreshAll]);
 
-  // Auto-poll if any feedback is in 'pending' state
+  // Auto-polling when background jobs are processing
   useEffect(() => {
     const hasPending = feedback.some((f) => f.status === "pending");
     if (!hasPending) return;
@@ -100,130 +139,302 @@ export default function DashboardPage() {
     const timer = setInterval(() => {
       loadFeedback();
       loadUsage();
+      loadAnalytics();
     }, 2000);
 
     return () => clearInterval(timer);
-  }, [feedback, loadFeedback, loadUsage]);
+  }, [feedback, loadFeedback, loadUsage, loadAnalytics]);
 
+  // Reset Quota trigger
   const handleResetUsage = async () => {
     if (!activeTenantId) return;
     try {
-      await fetch(`/api/v1/tenants/${activeTenantId}/reset`, {
-        method: "POST",
-      });
+      await fetch(`/api/v1/tenants/${activeTenantId}/reset`, { method: "POST" });
       loadUsage();
     } catch (err) {
-      console.error("Failed to reset usage:", err);
+      console.error(err);
     }
   };
 
+  // Keyboard shortcut ⌘K and ⌘N
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+        e.preventDefault();
+        setIsIngestModalOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Filter items based on activeTab
+  const displayedEntries = useMemo(() => {
+    if (activeTab === "urgent") {
+      return feedback.filter(
+        (f) =>
+          f.analysis?.urgency === "critical" || f.analysis?.urgency === "high"
+      );
+    }
+    return feedback;
+  }, [feedback, activeTab]);
+
+  // Batch actions
+  const handleToggleSelect = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAll = (selectAll: boolean) => {
+    setSelectedIds(selectAll ? displayedEntries.map((e) => e.id) : []);
+  };
+
+  const handleBatchStatus = async (status: string) => {
+    if (selectedIds.length === 0) return;
+    try {
+      await fetch("/api/v1/feedback/batch", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tenant-id": activeTenantId,
+        },
+        body: JSON.stringify({
+          ids: selectedIds,
+          action: { resolution_status: status },
+        }),
+      });
+      setSelectedIds([]);
+      refreshAll();
+    } catch (err) {
+      console.error("Batch update failed:", err);
+    }
+  };
+
+  // CSV Export
+  const handleExportCsv = (idsToExport?: string[]) => {
+    const exportData = idsToExport
+      ? feedback.filter((f) => idsToExport.includes(f.id))
+      : feedback;
+
+    if (exportData.length === 0) return;
+
+    const headers = [
+      "ID",
+      "Date",
+      "Source",
+      "Raw_Text",
+      "Category",
+      "Urgency",
+      "Sentiment",
+      "Resolution_Status",
+      "Assigned_To",
+      "Tokens_Consumed",
+      "Summary",
+    ];
+
+    const rows = exportData.map((f) => [
+      `"${f.id}"`,
+      `"${f.created_at}"`,
+      `"${f.source}"`,
+      `"${f.raw_text.replace(/"/g, '""')}"`,
+      `"${f.analysis?.category || ""}"`,
+      `"${f.analysis?.urgency || ""}"`,
+      `"${f.analysis?.sentiment || ""}"`,
+      `"${f.resolution_status || "open"}"`,
+      `"${f.assigned_to || ""}"`,
+      `"${f.analysis?.tokens_consumed || 0}"`,
+      `"${(f.analysis?.summary || "").replace(/"/g, '""')}"`,
+    ]);
+
+    const csvContent =
+      "data:text/csv;charset=utf-8," +
+      [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute(
+      "download",
+      `feedback-triage-${activeTenantId}-${Date.now()}.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const urgentCount = analytics?.urgent_count ?? 0;
+
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 pb-16">
-      {/* Top Header */}
-      <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-sm">
-              <Sparkles className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-slate-900">
-                  Feedback Triage &amp; Metering Engine
-                </h1>
-                <span className="text-xs bg-blue-100 text-blue-700 font-semibold px-2 py-0.5 rounded-full font-mono">
-                  FEAT-204
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 hidden sm:block">
-                AI-Native Full-Stack System • Real-Time Token Budget &amp; Multitenancy
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4 text-xs font-medium text-slate-600">
-            <div className="hidden lg:flex items-center gap-4">
-              <span className="inline-flex items-center gap-1.5 text-slate-500">
-                <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                Prompt &amp; XSS Secured
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-slate-500">
-                <Database className="w-4 h-4 text-blue-600" />
-                ACID Isolation
-              </span>
-              <span className="inline-flex items-center gap-1.5 text-slate-500">
-                <Cpu className="w-4 h-4 text-purple-600" />
-                Zod Schema Validated
-              </span>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Container */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6 space-y-6">
-        {/* Token Meter Section */}
-        <section>
-          <TenantMeter
-            usage={usage}
-            loading={loadingUsage}
-            onResetUsage={handleResetUsage}
-          />
-        </section>
-
-        {/* Toolbar & Filters */}
-        <section>
-          <FilterBar
-            category={category}
-            onCategoryChange={setCategory}
-            urgency={urgency}
-            onUrgencyChange={setUrgency}
-            search={search}
-            onSearchChange={setSearch}
-            onRefresh={() => {
-              loadFeedback();
-              loadUsage();
-            }}
-            onOpenSubmitModal={() => setIsModalOpen(true)}
-            loading={loadingFeedback}
-            tenants={tenants}
-            selectedTenantId={activeTenantId}
-            onSelectTenant={(id) => {
-              setActiveTenantId(id);
-            }}
-          />
-        </section>
-
-        {/* Feedback Table */}
-        <section className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-slate-500" />
-              <h2 className="text-sm font-bold text-slate-800">
-                Triage Pipeline Records
-              </h2>
-              <span className="text-xs bg-slate-200 text-slate-700 px-2 py-0.5 rounded-full font-mono">
-                {feedback.length}
-              </span>
-            </div>
-            <span className="text-xs text-slate-500">
-              Auto-refreshes when background triage tasks complete
-            </span>
-          </div>
-
-          <FeedbackTable entries={feedback} loading={loadingFeedback} />
-        </section>
-      </main>
-
-      {/* Ingestion Modal */}
-      <FeedbackSubmitModal
-        isOpen={isModalOpen}
-        onClose={() => setIsModalOpen(false)}
-        tenantId={activeTenantId}
-        onSubmitted={() => {
-          loadFeedback();
-          loadUsage();
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex">
+      {/* Sleek Enterprise Sidebar */}
+      <Sidebar
+        tenants={tenants}
+        selectedTenantId={activeTenantId}
+        onSelectTenant={(id) => {
+          setActiveTenantId(id);
+          setSelectedIds([]);
         }}
+        usage={usage}
+        activeTab={activeTab}
+        onSelectTab={(tab) => {
+          if (tab === "webhooks") {
+            setIsIngestModalOpen(true);
+          } else {
+            setActiveTab(tab);
+          }
+        }}
+        urgentCount={urgentCount}
+        totalCount={analytics?.total_feedback ?? feedback.length}
+        onResetUsage={handleResetUsage}
+      />
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <Header
+          search={search}
+          onSearchChange={setSearch}
+          onOpenIngestModal={() => setIsIngestModalOpen(true)}
+          onExportCsv={() => handleExportCsv()}
+          urgentCount={urgentCount}
+        />
+
+        <main className="p-6 space-y-6 max-w-7xl w-full mx-auto">
+          {/* Executive KPI Metrics */}
+          <section>
+            <MetricsCards
+              usage={usage}
+              analytics={analytics}
+              loading={loading && !usage}
+            />
+          </section>
+
+          {/* Category Distribution Bar */}
+          <section>
+            <CategoryDistribution
+              analytics={analytics}
+              activeCategory={categoryFilter}
+              onSelectCategory={(cat) => setCategoryFilter(cat)}
+            />
+          </section>
+
+          {/* Feedback Stream Controls & Filter Bar */}
+          <section className="space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-2 border-b border-zinc-800">
+              {/* Tab Selector */}
+              <div className="flex items-center gap-1 bg-zinc-900 p-1 rounded-lg border border-zinc-800">
+                <button
+                  onClick={() => setActiveTab("all")}
+                  className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                    activeTab === "all"
+                      ? "bg-zinc-800 text-white shadow-xs"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  All Feedback
+                </button>
+                <button
+                  onClick={() => setActiveTab("urgent")}
+                  className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all flex items-center gap-1.5 ${
+                    activeTab === "urgent"
+                      ? "bg-rose-950 text-rose-300 border border-rose-800/80 shadow-xs"
+                      : "text-zinc-400 hover:text-zinc-200"
+                  }`}
+                >
+                  <AlertTriangle className="w-3 h-3 text-rose-400" />
+                  Urgent Incidents ({urgentCount})
+                </button>
+              </div>
+
+              {/* Quick Filters */}
+              <div className="flex items-center gap-2">
+                {/* Channel Filter */}
+                <select
+                  value={sourceFilter}
+                  onChange={(e) => setSourceFilter(e.target.value)}
+                  className="text-xs bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-zinc-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                >
+                  <option value="">All Channels</option>
+                  <option value="zendesk">Zendesk</option>
+                  <option value="intercom">Intercom</option>
+                  <option value="stripe">Stripe</option>
+                  <option value="web">In-App Voice</option>
+                  <option value="email">Email</option>
+                  <option value="api">API Webhook</option>
+                </select>
+
+                {/* Resolution Status Filter */}
+                <select
+                  value={resolutionFilter}
+                  onChange={(e) => setResolutionFilter(e.target.value)}
+                  className="text-xs bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-zinc-300 focus:outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
+                >
+                  <option value="">All Statuses</option>
+                  <option value="open">Open</option>
+                  <option value="in_progress">In Progress</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="dismissed">Dismissed</option>
+                </select>
+
+                <button
+                  onClick={refreshAll}
+                  className="p-1.5 text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-800 rounded-lg hover:bg-zinc-800 transition-colors"
+                  title="Refresh stream"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+                </button>
+              </div>
+            </div>
+
+            {/* Table */}
+            <FeedbackTable
+              entries={displayedEntries}
+              loading={loading}
+              selectedIds={selectedIds}
+              onToggleSelect={handleToggleSelect}
+              onSelectAll={handleSelectAll}
+              onRowClick={(item) => setInspectedItem(item)}
+            />
+          </section>
+        </main>
+      </div>
+
+      {/* Floating Batch Action Bar */}
+      <BatchActionBar
+        selectedCount={selectedIds.length}
+        onMarkResolved={() => handleBatchStatus("resolved")}
+        onMarkInProgress={() => handleBatchStatus("in_progress")}
+        onExportSelected={() => handleExportCsv(selectedIds)}
+        onClear={() => setSelectedIds([])}
+      />
+
+      {/* Slide-over Inspection Drawer */}
+      <FeedbackDetailDrawer
+        item={inspectedItem}
+        onClose={() => setInspectedItem(null)}
+        tenantId={activeTenantId}
+        onUpdated={() => {
+          refreshAll();
+          if (inspectedItem) {
+            // refresh single inspected item
+            fetch(`/api/v1/feedback/${inspectedItem.id}`, {
+              headers: { "x-tenant-id": activeTenantId },
+            })
+              .then((r) => r.json())
+              .then((res) => {
+                if (res.success) setInspectedItem(res.data);
+              })
+              .catch(() => {});
+          }
+        }}
+      />
+
+      {/* Dual-tab Ingestion & Webhook Modal */}
+      <IngestModal
+        isOpen={isIngestModalOpen}
+        onClose={() => setIsIngestModalOpen(false)}
+        tenantId={activeTenantId}
+        onSubmitted={refreshAll}
       />
     </div>
   );

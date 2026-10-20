@@ -10,8 +10,10 @@ generator client {
 model Tenant {
   id                   String            @id @default(cuid())
   name                 String
+  plan_tier            String            @default("Enterprise Growth")
   monthly_token_budget Int               @default(50000)
   tokens_used          Int               @default(0)
+  rate_limit_per_min   Int               @default(120)
   created_at           DateTime          @default(now())
   updated_at           DateTime          @updatedAt
   feedback_entries     FeedbackEntry[]
@@ -20,32 +22,40 @@ model Tenant {
 }
 
 model FeedbackEntry {
-  id         String            @id @default(cuid())
-  tenant_id  String
-  raw_text   String
-  source     String            @default("web") // "web", "email", "api"
-  status     String            @default("pending") // "pending", "processed", "failed"
-  created_at DateTime          @default(now())
-  updated_at DateTime          @updatedAt
+  id                String            @id @default(cuid())
+  tenant_id         String
+  raw_text          String
+  source            String            @default("web") // "web", "email", "api", "intercom", "zendesk"
+  status            String            @default("pending") // "pending", "processed", "failed"
+  resolution_status String            @default("open") // "open", "in_progress", "resolved", "dismissed"
+  assigned_to       String?           // e.g. "Platform Engineering", "Billing Support"
+  internal_notes    String?           // internal developer/agent notes
+  created_at        DateTime          @default(now())
+  updated_at        DateTime          @updatedAt
 
-  tenant     Tenant            @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
-  analysis   FeedbackAnalysis?
+  tenant            Tenant            @relation(fields: [tenant_id], references: [id], onDelete: Cascade)
+  analysis          FeedbackAnalysis?
 
   @@index([tenant_id, created_at])
+  @@index([tenant_id, resolution_status])
   @@map("feedback_entries")
 }
 
 model FeedbackAnalysis {
-  id              String        @id @default(cuid())
-  feedback_id     String        @unique
-  category        String        // "bug", "feature_request", "billing", "other"
-  urgency         String        // "low", "medium", "high", "critical"
-  summary         String
-  sentiment       String        // "positive", "neutral", "negative"
-  tokens_consumed Int           @default(0)
-  created_at      DateTime      @default(now())
+  id               String        @id @default(cuid())
+  feedback_id      String        @unique
+  category         String        // "bug", "feature_request", "billing", "other"
+  urgency          String        // "low", "medium", "high", "critical"
+  summary          String
+  sentiment        String        // "positive", "neutral", "negative"
+  suggested_action String        @default("Review and assign to engineering lead")
+  confidence_score Float         @default(0.94)
+  latency_ms       Int           @default(280)
+  model_used       String        @default("claude-3-5-haiku")
+  tokens_consumed  Int           @default(0)
+  created_at       DateTime      @default(now())
 
-  feedback_entry  FeedbackEntry @relation(fields: [feedback_id], references: [id], onDelete: Cascade)
+  feedback_entry   FeedbackEntry @relation(fields: [feedback_id], references: [id], onDelete: Cascade)
 
   @@map("feedback_analysis")
 }

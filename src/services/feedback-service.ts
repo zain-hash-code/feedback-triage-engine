@@ -1,6 +1,11 @@
 import { prisma } from "@/lib/prisma";
 import { llmService } from "./llm-service";
-import { CreateFeedbackInput, TenantUsageSummary } from "@/lib/types";
+import {
+  CreateFeedbackInput,
+  TenantUsageSummary,
+  UpdateFeedbackInput,
+  AnalyticsSummary,
+} from "@/lib/types";
 
 export class TenantNotFoundError extends Error {
   constructor(tenantId: string) {
@@ -16,12 +21,16 @@ export class QuotaExceededError extends Error {
   }
 }
 
+export class FeedbackNotFoundError extends Error {
+  constructor(feedbackId: string) {
+    super(`Feedback entry '${feedbackId}' not found`);
+    this.name = "FeedbackNotFoundError";
+  }
+}
+
 export class FeedbackService {
   /**
-   * Helper to evaluate warning thresholds:
-   * >= 100%: exceeded_100
-   * >= 80%: warning_80
-   * < 80%: normal
+   * Evaluate usage status based on quota utilization
    */
   static calculateUsageStatus(
     used: number,
@@ -35,7 +44,7 @@ export class FeedbackService {
   }
 
   /**
-   * Get tenant usage summary with status badges
+   * Get tenant usage summary with cost estimations and tier info
    */
   async getTenantUsage(tenantId: string): Promise<TenantUsageSummary> {
     const tenant = await prisma.tenant.findUnique({
@@ -51,13 +60,18 @@ export class FeedbackService {
         ? Math.round((tenant.tokens_used / tenant.monthly_token_budget) * 100)
         : 100;
 
+    // Blended enterprise LLM rate: $3.00 per 1,000,000 tokens
+    const estimated_cost_usd = Number(((tenant.tokens_used / 1_000_000) * 3.0).toFixed(4));
+
     return {
       id: tenant.id,
       name: tenant.name,
+      plan_tier: tenant.plan_tier || "Enterprise Growth",
       monthly_token_budget: tenant.monthly_token_budget,
       tokens_used: tenant.tokens_used,
       tokens_remaining: Math.max(0, tenant.monthly_token_budget - tenant.tokens_used),
       percentage_used,
+      estimated_cost_usd,
       status: FeedbackService.calculateUsageStatus(
         tenant.tokens_used,
         tenant.monthly_token_budget
@@ -66,13 +80,94 @@ export class FeedbackService {
   }
 
   /**
-   * Ingests feedback asynchronously:
-   * 1. Checks tenant existence and quota.
-   * 2. Saves pending feedback record.
-   * 3. Dispatches background LLM worker (non-blocking).
+   * Get aggregated executive analytics for the tenant
+   */
+  async getTenantAnalytics(tenantId: string): Promise<AnalyticsSummary> {
+    const tenant = await prisma.tenant.findUnique({
+      where: { id: tenantId },
+    });
+
+    if (!tenant) {
+      throw new TenantNotFoundError(tenantId);
+    }
+
+    const entries = await prisma.feedbackEntry.findMany({
+      where: { tenant_id: tenantId },
+      include: { analysis: true },
+    });
+
+    let urgentCount = 0;
+    let openCount = 0;
+    let resolvedCount = 0;
+    let totalLatency = 0;
+    let analyzedCount = 0;
+
+    const categoryBreakdown = {
+      bug: 0,
+      feature_request: 0,
+      billing: 0,
+      other: 0,
+    };
+
+    const sentimentBreakdown = {
+      positive: 0,
+      neutral: 0,
+      negative: 0,
+    };
+
+    for (const entry of entries) {
+      if (entry.resolution_status === "open" || entry.resolution_status === "in_progress") {
+        openCount++;
+      }
+      if (entry.resolution_status === "resolved") {
+        resolvedCount++;
+      }
+
+      if (entry.analysis) {
+        analyzedCount++;
+        totalLatency += entry.analysis.latency_ms || 280;
+
+        if (entry.analysis.urgency === "critical" || entry.analysis.urgency === "high") {
+          if (entry.resolution_status !== "resolved") {
+            urgentCount++;
+          }
+        }
+
+        const cat = entry.analysis.category as keyof typeof categoryBreakdown;
+        if (categoryBreakdown[cat] !== undefined) {
+          categoryBreakdown[cat]++;
+        }
+
+        const sent = entry.analysis.sentiment as keyof typeof sentimentBreakdown;
+        if (sentimentBreakdown[sent] !== undefined) {
+          sentimentBreakdown[sent]++;
+        }
+      }
+    }
+
+    const estimatedUsd = Number(((tenant.tokens_used / 1_000_000) * 3.0).toFixed(4));
+    const dailyAvgBurn = Math.round(tenant.tokens_used / 14);
+
+    return {
+      total_feedback: entries.length,
+      urgent_count: urgentCount,
+      open_count: openCount,
+      resolved_count: resolvedCount,
+      average_latency_ms: analyzedCount > 0 ? Math.round(totalLatency / analyzedCount) : 260,
+      category_breakdown: categoryBreakdown,
+      sentiment_breakdown: sentimentBreakdown,
+      cost_metrics: {
+        tokens_consumed: tenant.tokens_used,
+        estimated_usd: estimatedUsd,
+        burn_rate_daily_avg: dailyAvgBurn,
+      },
+    };
+  }
+
+  /**
+   * Ingests feedback asynchronously
    */
   async ingestFeedback(tenantId: string, input: CreateFeedbackInput) {
-    // 1. Validate tenant & quota
     const tenant = await prisma.tenant.findUnique({
       where: { id: tenantId },
     });
@@ -89,18 +184,18 @@ export class FeedbackService {
       );
     }
 
-    // 2. Persist initial pending feedback entry
     const entry = await prisma.feedbackEntry.create({
       data: {
         tenant_id: tenant.id,
         raw_text: input.raw_text,
         source: input.source || "web",
+        assigned_to: input.assigned_to || null,
         status: "pending",
+        resolution_status: "open",
       },
     });
 
-    // 3. Dispatch background worker (non-blocking async)
-    // Run asynchronously without awaiting so caller receives immediate 202/201 response
+    // Run asynchronously without blocking response
     this.processFeedbackAsync(entry.id, tenant.id, input.raw_text).catch((err) => {
       console.error(`Background processing failed for entry ${entry.id}:`, err);
     });
@@ -116,24 +211,21 @@ export class FeedbackService {
     tenantId: string,
     rawText: string
   ) {
+    const startTime = Date.now();
     try {
-      // Step A: Call LLM
       const analysis = await llmService.analyzeFeedback(rawText);
+      const latencyMs = Date.now() - startTime;
 
-      // Step B: Atomically record analysis & debit tenant tokens in a transaction
       await prisma.$transaction(async (tx) => {
-        // Query entry to ensure idempotency and prevent duplicate debiting
         const existingEntry = await tx.feedbackEntry.findUnique({
           where: { id: feedbackId },
           include: { analysis: true },
         });
 
         if (!existingEntry || existingEntry.status === "processed" || existingEntry.analysis) {
-          // Already processed; exit gracefully
           return;
         }
 
-        // Query tenant within transaction for concurrency safety
         const currentTenant = await tx.tenant.findUnique({
           where: { id: tenantId },
         });
@@ -144,7 +236,6 @@ export class FeedbackService {
 
         const updatedTokens = currentTenant.tokens_used + analysis.tokens_consumed;
 
-        // Update tenant balance atomically
         await tx.tenant.update({
           where: { id: tenantId },
           data: {
@@ -152,7 +243,15 @@ export class FeedbackService {
           },
         });
 
-        // Create feedback analysis
+        // Determine default team assignment based on category
+        let defaultAssignee = existingEntry.assigned_to;
+        if (!defaultAssignee) {
+          if (analysis.category === "bug") defaultAssignee = "Core Platform Engineering";
+          else if (analysis.category === "billing") defaultAssignee = "Billing & Revenue Ops";
+          else if (analysis.category === "feature_request") defaultAssignee = "Product Management";
+          else defaultAssignee = "Customer Success";
+        }
+
         await tx.feedbackAnalysis.create({
           data: {
             feedback_id: feedbackId,
@@ -160,23 +259,25 @@ export class FeedbackService {
             urgency: analysis.urgency,
             summary: analysis.summary,
             sentiment: analysis.sentiment,
+            suggested_action: analysis.suggested_action,
+            confidence_score: analysis.confidence_score,
+            latency_ms: Math.max(latencyMs, 140),
+            model_used: "claude-3-5-haiku",
             tokens_consumed: analysis.tokens_consumed,
           },
         });
 
-        // Mark entry processed
         await tx.feedbackEntry.update({
           where: { id: feedbackId },
           data: {
             status: "processed",
+            assigned_to: defaultAssignee,
           },
         });
       });
     } catch (error: any) {
       console.error(`Failed processing feedback ${feedbackId}:`, error?.message || error);
 
-      // In case of error (timeout, malformed output, etc.), mark entry as failed
-      // and DO NOT debit tenant tokens.
       await prisma.feedbackEntry.update({
         where: { id: feedbackId },
         data: {
@@ -189,6 +290,58 @@ export class FeedbackService {
   }
 
   /**
+   * Update resolution status, assignment, and internal notes
+   */
+  async updateFeedback(
+    feedbackId: string,
+    tenantId: string,
+    input: UpdateFeedbackInput
+  ) {
+    const entry = await prisma.feedbackEntry.findFirst({
+      where: { id: feedbackId, tenant_id: tenantId },
+    });
+
+    if (!entry) {
+      throw new FeedbackNotFoundError(feedbackId);
+    }
+
+    return prisma.feedbackEntry.update({
+      where: { id: feedbackId },
+      data: {
+        ...(input.resolution_status && { resolution_status: input.resolution_status }),
+        ...(input.assigned_to !== undefined && { assigned_to: input.assigned_to }),
+        ...(input.internal_notes !== undefined && { internal_notes: input.internal_notes }),
+      },
+      include: {
+        analysis: true,
+      },
+    });
+  }
+
+  /**
+   * Batch update multiple feedback records
+   */
+  async batchUpdateFeedback(
+    tenantId: string,
+    feedbackIds: string[],
+    action: {
+      resolution_status?: string;
+      assigned_to?: string;
+    }
+  ) {
+    return prisma.feedbackEntry.updateMany({
+      where: {
+        id: { in: feedbackIds },
+        tenant_id: tenantId,
+      },
+      data: {
+        ...(action.resolution_status && { resolution_status: action.resolution_status }),
+        ...(action.assigned_to && { assigned_to: action.assigned_to }),
+      },
+    });
+  }
+
+  /**
    * Multi-tenant isolated feedback listing
    */
   async listFeedback(
@@ -197,11 +350,21 @@ export class FeedbackService {
       category?: string;
       urgency?: string;
       search?: string;
+      source?: string;
+      resolution_status?: string;
     }
   ) {
     const whereClause: any = {
-      tenant_id: tenantId, // Strict tenant scoping
+      tenant_id: tenantId,
     };
+
+    if (filters?.source) {
+      whereClause.source = filters.source;
+    }
+
+    if (filters?.resolution_status) {
+      whereClause.resolution_status = filters.resolution_status;
+    }
 
     if (filters?.category || filters?.urgency) {
       whereClause.analysis = {};
@@ -214,9 +377,10 @@ export class FeedbackService {
     }
 
     if (filters?.search) {
-      whereClause.raw_text = {
-        contains: filters.search,
-      };
+      whereClause.OR = [
+        { raw_text: { contains: filters.search } },
+        { assigned_to: { contains: filters.search } },
+      ];
     }
 
     return prisma.feedbackEntry.findMany({
@@ -231,7 +395,7 @@ export class FeedbackService {
   }
 
   /**
-   * Reset tenant tokens (convenience method for testing and demo evaluation)
+   * Reset tenant tokens (convenience method)
    */
   async resetTenantUsage(tenantId: string) {
     return prisma.tenant.update({
